@@ -1,0 +1,342 @@
+namespace Amalgame.Formats.Pdf
+
+import Amalgame.Collections
+import Amalgame.String
+import Amalgame.Crypto
+
+// ═══════════════════════════════════════════════════════════════════════
+//  amalgame-pdf — générateur PDF 1.4 souverain, pur Amalgame
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Écrit un document PDF d'une page (suffisant pour factures, reçus, bons).
+// Aucune dépendance externe : polices standard PDF (Helvetica / Helvetica-Bold,
+// pas d'embarquement) et embarquement d'images JPEG (filtre DCTDecode).
+//
+// Repère : l'API expose des coordonnées en points, origine **coin haut-gauche**
+// (y vers le bas — comme à l'écran) ; la conversion vers le repère PDF natif
+// (origine bas-gauche) est faite en interne. Tout est en entiers (points).
+//
+// Texte encodé en WinAnsi (Latin-1 + € et guillemets typographiques) — couvre
+// le français ; les caractères hors table deviennent « ? ».
+//
+// Surface :
+//   Pdf.A4Portrait() / A4Landscape() / New(wPts, hPts)
+//   Text / TextBold / TextColor / TextBoldColor(x, yTop, size, s [, rgb])
+//   TextRight / TextRightBold / TextRightColor(xRight, yTop, size, s [, rgb])
+//   Line(x1, y1, x2, y2, widthPts)
+//   Rect(x, yTop, w, h, widthPts)                 (contour)
+//   FillRect(x, yTop, w, h, rgb)                  (rempli)
+//   TextWidth(size, s) -> int                     (largeur en points)
+//   AddJpeg(bytes, wPx, hPx) -> int (handle)  /  DrawImage(handle, x, yTop, w, h)
+//   Build() -> List<int>                          (octets du PDF)
+
+public class PdfImage {
+    public Data: List<int>
+    public W:    int
+    public H:    int
+    public Cs:   string        // espace colorimétrique PDF (DeviceGray/RGB/CMYK)
+    public PdfImage() { this.Data = new List<int>(); this.W = 0; this.H = 0; this.Cs = "DeviceRGB" }
+}
+
+public class Pdf {
+    public Wd:      int
+    public Ht:      int
+    public Content: List<int>
+    public Images:  List<PdfImage>
+
+    public Pdf() {
+        this.Wd = 595
+        this.Ht = 842
+        this.Content = new List<int>()
+        this.Images = new List<PdfImage>()
+    }
+
+    public static Pdf New(int wPts, int hPts) {
+        let p = new Pdf()
+        p.Wd = wPts
+        p.Ht = hPts
+        return p
+    }
+    public static Pdf A4Portrait()  { return Pdf.New(595, 842) }
+    public static Pdf A4Landscape() { return Pdf.New(842, 595) }
+
+    // ── octets bas niveau ───────────────────────────────────────────────
+    private static void putAscii(List<int> buf, string s) {
+        let b: List<int> = Bytes.FromString(s)
+        for i in 0..b.Count() { buf.Add(b.Get(i)) }
+    }
+    private static void putBytes(List<int> buf, List<int> src) {
+        for i in 0..src.Count() { buf.Add(src.Get(i)) }
+    }
+
+    private void emit(string s) { Pdf.putAscii(this.Content, s) }
+
+    // fraction 0..255 → décimale "0.xxx" / "1" / "0" pour les opérateurs couleur.
+    private static string frac255(int c) {
+        if (c <= 0) { return "0" }
+        if (c >= 255) { return "1" }
+        let t: int = c * 1000 / 255
+        let h: int = t / 100
+        let rem: int = t % 100
+        let te: int = rem / 10
+        let on: int = rem % 10
+        return "0." + String_FromInt(h) + String_FromInt(te) + String_FromInt(on)
+    }
+    private static string rgbStr(int rgb) {
+        let r: int = (rgb / 65536) % 256
+        let g: int = (rgb / 256) % 256
+        let b: int = rgb % 256
+        return Pdf.frac255(r) + " " + Pdf.frac255(g) + " " + Pdf.frac255(b)
+    }
+
+    // ── encodage WinAnsi ────────────────────────────────────────────────
+    private static int cpToWinAnsi(int cp) {
+        if (cp < 128) { return cp }
+        if (cp == 0x20AC) { return 0x80 }     // €
+        if (cp == 0x2018) { return 0x91 }     // ‘
+        if (cp == 0x2019) { return 0x92 }     // ’
+        if (cp == 0x201C) { return 0x93 }     // “
+        if (cp == 0x201D) { return 0x94 }     // ”
+        if (cp == 0x2013) { return 0x96 }     // –
+        if (cp == 0x2014) { return 0x97 }     // —
+        if (cp == 0x0152) { return 0x8C }     // Œ
+        if (cp == 0x0153) { return 0x9C }     // œ
+        if (cp >= 0xA0 && cp <= 0xFF) { return cp }  // Latin-1 = WinAnsi
+        return 0x3F                            // '?'
+    }
+    // UTF-8 → octets WinAnsi.
+    private static List<int> winansi(string s) {
+        let u: List<int> = Bytes.FromString(s)
+        let out = new List<int>()
+        var i: int = 0
+        let n: int = u.Count()
+        while (i < n) {
+            let b: int = u.Get(i)
+            if (b < 0x80) {
+                out.Add(b)
+                i = i + 1
+            } else if (b >= 0xC0 && b < 0xE0 && i + 1 < n) {
+                let cp: int = ((b & 0x1F) << 6) | (u.Get(i + 1) & 0x3F)
+                out.Add(Pdf.cpToWinAnsi(cp))
+                i = i + 2
+            } else if (b >= 0xE0 && b < 0xF0 && i + 2 < n) {
+                let cp: int = ((b & 0x0F) << 12) | ((u.Get(i + 1) & 0x3F) << 6) | (u.Get(i + 2) & 0x3F)
+                out.Add(Pdf.cpToWinAnsi(cp))
+                i = i + 3
+            } else if (b >= 0xF0 && i + 3 < n) {
+                out.Add(0x3F)
+                i = i + 4
+            } else {
+                out.Add(0x3F)
+                i = i + 1
+            }
+        }
+        return out
+    }
+    // Échappe ( ) \ dans une chaîne littérale PDF.
+    private static List<int> escLit(List<int> wa) {
+        let out = new List<int>()
+        for i in 0..wa.Count() {
+            let b: int = wa.Get(i)
+            if (b == 0x28 || b == 0x29 || b == 0x5C) { out.Add(0x5C) }
+            out.Add(b)
+        }
+        return out
+    }
+
+    // ── métriques Helvetica (approx, /1000 em) pour l'alignement à droite ─
+    private static int charW(int b) {
+        if (b == 32) { return 278 }                 // espace
+        if (b >= 48 && b <= 57) { return 556 }      // chiffres
+        if (b == 46 || b == 44) { return 278 }      // . ,
+        if (b == 58 || b == 59) { return 278 }      // : ;
+        if (b == 40 || b == 41) { return 333 }      // ( )
+        if (b == 45) { return 333 }                 // -
+        if (b == 47) { return 278 }                 // /
+        if (b == 0x80) { return 556 }               // €
+        if (b == 105 || b == 108 || b == 106) { return 222 }  // i l j
+        if (b == 102 || b == 116) { return 278 }    // f t
+        if (b == 114) { return 333 }                // r
+        if (b == 73) { return 278 }                 // I
+        if (b >= 65 && b <= 90) { return 667 }      // majuscules (moy.)
+        if (b >= 97 && b <= 122) { return 556 }     // minuscules (moy.)
+        return 556
+    }
+    public int TextWidth(int size, string s) {
+        let wa: List<int> = Pdf.winansi(s)
+        var sum: int = 0
+        for i in 0..wa.Count() { sum = sum + Pdf.charW(wa.Get(i)) }
+        return sum * size / 1000
+    }
+
+    // ── texte ────────────────────────────────────────────────────────────
+    private void emitText(int x, int yTop, int size, string s, bool bold, int rgb) {
+        let y: int = this.Ht - yTop
+        var font: string = "/F1"
+        if (bold) { font = "/F2" }
+        this.emit(Pdf.rgbStr(rgb) + " rg BT " + font + " " + String_FromInt(size)
+            + " Tf " + String_FromInt(x) + " " + String_FromInt(y) + " Td (")
+        Pdf.putBytes(this.Content, Pdf.escLit(Pdf.winansi(s)))
+        this.emit(") Tj ET\n")
+    }
+    public void Text(int x, int yTop, int size, string s)          { this.emitText(x, yTop, size, s, false, 0) }
+    public void TextBold(int x, int yTop, int size, string s)      { this.emitText(x, yTop, size, s, true, 0) }
+    public void TextColor(int x, int yTop, int size, string s, int rgb)     { this.emitText(x, yTop, size, s, false, rgb) }
+    public void TextBoldColor(int x, int yTop, int size, string s, int rgb) { this.emitText(x, yTop, size, s, true, rgb) }
+    public void TextRight(int xRight, int yTop, int size, string s) {
+        this.emitText(xRight - this.TextWidth(size, s), yTop, size, s, false, 0)
+    }
+    public void TextRightBold(int xRight, int yTop, int size, string s) {
+        this.emitText(xRight - this.TextWidth(size, s), yTop, size, s, true, 0)
+    }
+    public void TextRightColor(int xRight, int yTop, int size, string s, int rgb) {
+        this.emitText(xRight - this.TextWidth(size, s), yTop, size, s, false, rgb)
+    }
+
+    // ── vecteurs ──────────────────────────────────────────────────────────
+    public void Line(int x1, int y1Top, int x2, int y2Top, int widthPts) {
+        let y1: int = this.Ht - y1Top
+        let y2: int = this.Ht - y2Top
+        this.emit(String_FromInt(widthPts) + " w 0 0 0 RG "
+            + String_FromInt(x1) + " " + String_FromInt(y1) + " m "
+            + String_FromInt(x2) + " " + String_FromInt(y2) + " l S\n")
+    }
+    public void LineColor(int x1, int y1Top, int x2, int y2Top, int widthPts, int rgb) {
+        let y1: int = this.Ht - y1Top
+        let y2: int = this.Ht - y2Top
+        this.emit(String_FromInt(widthPts) + " w " + Pdf.rgbStr(rgb) + " RG "
+            + String_FromInt(x1) + " " + String_FromInt(y1) + " m "
+            + String_FromInt(x2) + " " + String_FromInt(y2) + " l S\n")
+    }
+    public void Rect(int x, int yTop, int w, int h, int widthPts) {
+        let y: int = this.Ht - yTop - h
+        this.emit(String_FromInt(widthPts) + " w 0 0 0 RG "
+            + String_FromInt(x) + " " + String_FromInt(y) + " "
+            + String_FromInt(w) + " " + String_FromInt(h) + " re S\n")
+    }
+    public void FillRect(int x, int yTop, int w, int h, int rgb) {
+        let y: int = this.Ht - yTop - h
+        this.emit(Pdf.rgbStr(rgb) + " rg "
+            + String_FromInt(x) + " " + String_FromInt(y) + " "
+            + String_FromInt(w) + " " + String_FromInt(h) + " re f\n")
+    }
+
+    // ── images JPEG (DCTDecode) ───────────────────────────────────────────
+    public int AddJpeg(List<int> jpeg, int wPx, int hPx) {
+        let im = new PdfImage()
+        im.Data = jpeg
+        im.W = wPx
+        im.H = hPx
+        im.Cs = Pdf.jpegColorSpace(jpeg)
+        this.Images.Add(im)
+        return this.Images.Count() - 1
+    }
+
+    // Détermine l'espace colorimétrique d'un JPEG via le marqueur SOF
+    // (nombre de composantes : 1=Gray, 3=RGB, 4=CMYK). Défaut RGB.
+    private static string jpegColorSpace(List<int> d) {
+        var i: int = 2
+        let n: int = d.Count()
+        while (i + 9 < n) {
+            if (d.Get(i) != 0xFF) { i = i + 1; continue }
+            let m: int = d.Get(i + 1)
+            if (m == 0xD8 || m == 0xD9) { i = i + 2; continue }
+            if (m >= 0xD0 && m <= 0xD7) { i = i + 2; continue }
+            let len: int = d.Get(i + 2) * 256 + d.Get(i + 3)
+            if (m == 0xC0 || m == 0xC1 || m == 0xC2 || m == 0xC3) {
+                let comps: int = d.Get(i + 9)
+                if (comps == 1) { return "DeviceGray" }
+                if (comps == 4) { return "DeviceCMYK" }
+                return "DeviceRGB"
+            }
+            i = i + 2 + len
+        }
+        return "DeviceRGB"
+    }
+    public void DrawImage(int handle, int x, int yTop, int w, int h) {
+        let y: int = this.Ht - yTop - h
+        this.emit("q " + String_FromInt(w) + " 0 0 " + String_FromInt(h) + " "
+            + String_FromInt(x) + " " + String_FromInt(y) + " cm /Im"
+            + String_FromInt(handle) + " Do Q\n")
+    }
+
+    // ── sérialisation ──────────────────────────────────────────────────────
+    private static string pad10(int n) {
+        var s: string = String_FromInt(n)
+        while (String_Length(s) < 10) { s = "0" + s }
+        return s
+    }
+
+    public List<int> Build() {
+        let out = new List<int>()
+        let nImg: int = this.Images.Count()
+        let total: int = 6 + nImg          // 1..6 fixes + images
+        // offsets[obj] (index 1..total)
+        let offsets = new List<int>()
+        for i in 0..total + 1 { offsets.Add(0) }
+
+        Pdf.putAscii(out, "%PDF-1.4\n")
+        // marqueur binaire
+        out.Add(0x25); out.Add(0xE2); out.Add(0xE3); out.Add(0xCF); out.Add(0xD3); out.Add(0x0A)
+
+        // obj 1 : Catalog
+        offsets.Set(1, out.Count())
+        Pdf.putAscii(out, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+
+        // obj 2 : Pages
+        offsets.Set(2, out.Count())
+        Pdf.putAscii(out, "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
+
+        // obj 3 : Page
+        offsets.Set(3, out.Count())
+        var xobj: string = ""
+        if (nImg > 0) {
+            xobj = " /XObject <<"
+            for i in 0..nImg {
+                xobj = xobj + " /Im" + String_FromInt(i) + " " + String_FromInt(7 + i) + " 0 R"
+            }
+            xobj = xobj + " >>"
+        }
+        Pdf.putAscii(out, "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 "
+            + String_FromInt(this.Wd) + " " + String_FromInt(this.Ht) + "]"
+            + " /Resources << /Font << /F1 5 0 R /F2 6 0 R >>" + xobj + " >>"
+            + " /Contents 4 0 R >>\nendobj\n")
+
+        // obj 4 : Contents (stream)
+        offsets.Set(4, out.Count())
+        Pdf.putAscii(out, "4 0 obj\n<< /Length " + String_FromInt(this.Content.Count()) + " >>\nstream\n")
+        Pdf.putBytes(out, this.Content)
+        Pdf.putAscii(out, "\nendstream\nendobj\n")
+
+        // obj 5 / 6 : polices
+        offsets.Set(5, out.Count())
+        Pdf.putAscii(out, "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n")
+        offsets.Set(6, out.Count())
+        Pdf.putAscii(out, "6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>\nendobj\n")
+
+        // obj 7.. : images JPEG
+        for i in 0..nImg {
+            let im: PdfImage = this.Images.Get(i)
+            offsets.Set(7 + i, out.Count())
+            Pdf.putAscii(out, String_FromInt(7 + i) + " 0 obj\n"
+                + "<< /Type /XObject /Subtype /Image /Width " + String_FromInt(im.W)
+                + " /Height " + String_FromInt(im.H)
+                + " /ColorSpace /" + im.Cs + " /BitsPerComponent 8 /Filter /DCTDecode /Length "
+                + String_FromInt(im.Data.Count()) + " >>\nstream\n")
+            Pdf.putBytes(out, im.Data)
+            Pdf.putAscii(out, "\nendstream\nendobj\n")
+        }
+
+        // xref
+        let xrefPos: int = out.Count()
+        Pdf.putAscii(out, "xref\n0 " + String_FromInt(total + 1) + "\n")
+        Pdf.putAscii(out, "0000000000 65535 f \n")
+        for i in 1..total + 1 {
+            Pdf.putAscii(out, Pdf.pad10(offsets.Get(i)) + " 00000 n \n")
+        }
+        // trailer
+        Pdf.putAscii(out, "trailer\n<< /Size " + String_FromInt(total + 1)
+            + " /Root 1 0 R >>\nstartxref\n" + String_FromInt(xrefPos) + "\n%%EOF\n")
+        return out
+    }
+}
