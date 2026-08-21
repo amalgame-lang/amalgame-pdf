@@ -1,23 +1,24 @@
-# Package manifest — amalgame-pdf
+# Package manifest -- amalgame-pdf
 #
-# Générateur PDF 1.4 souverain, pur Amalgame — une page, texte
-# (Helvetica / Helvetica-Bold, encodage WinAnsi), vecteurs (traits,
-# rectangles pleins/contour) et images JPEG (DCTDecode). Aucune
-# dépendance native : idéal pour factures, reçus, bons de commande.
+# Generateur PDF 1.4 souverain, pur Amalgame -- multi-page, texte
+# (Helvetica / Helvetica-Bold, encodage WinAnsi) avec retour a la ligne
+# automatique (WrapText/Flow), vecteurs (traits, rectangles pleins/
+# contour) et images JPEG (DCTDecode). Aucune dependance native de
+# rendu : ideal pour factures, rapports, editions imprimables.
 #
-# API : cf. classe `Pdf` (facade.am). Coordonnées en points, origine
+# API : cf. classe `Pdf` (facade.am). Coordonnees en points, origine
 # coin haut-gauche ; rendu final en octets (List<int>).
 #
 # Installation :
 #
 #   amc package add pdf
-#   amc package add github.com/amalgame-lang/amalgame-pdf@v0.1.0
+#   amc package add github.com/amalgame-lang/amalgame-pdf@v0.2.0
 
 [package]
 name              = "amalgame-pdf"
-version           = "0.1.0"
+version           = "0.2.0"
 license           = "Apache-2.0"
-description       = "Pure-Amalgame PDF 1.4 writer: text (Helvetica, WinAnsi), vectors, JPEG images."
+description       = "Pure-Amalgame PDF 1.4 writer: multi-page, word-wrap, text (Helvetica, WinAnsi), vectors, JPEG images."
 authors           = ["Bastien Mouget"]
 required-amalgame = ">=0.7.7"
 schema-version    = 1

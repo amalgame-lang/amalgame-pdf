@@ -43,12 +43,28 @@ public class Pdf {
     public Ht:      int
     public Content: List<int>
     public Images:  List<PdfImage>
+    // Pages déjà closes (voir NewPage()) — Content porte toujours la
+    // page COURANTE, encore ouverte. Build() ajoute Content à la fin
+    // de cette liste au moment de sérialiser, donc un document jamais
+    // touché par NewPage() reste un simple document 1 page (aucun
+    // changement de comportement pour le code existant v0.1).
+    public Pages: List<List<int>>
 
     public Pdf() {
         this.Wd = 595
         this.Ht = 842
         this.Content = new List<int>()
         this.Images = new List<PdfImage>()
+        this.Pages = new List<List<int>>()
+    }
+
+    // Clôt la page courante et en ouvre une nouvelle, même taille
+    // (Wd/Ht) — un document multi-page reste une seule taille de page,
+    // suffisant pour une édition/un rapport (pas de mélange portrait/
+    // paysage dans un même document, cas pas rencontré ici).
+    public void NewPage() {
+        this.Pages.Add(this.Content)
+        this.Content = new List<int>()
     }
 
     public static Pdf New(int wPts, int hPts) {
@@ -169,6 +185,97 @@ public class Pdf {
         return sum * size / 1000
     }
 
+    // ── retour à la ligne automatique (v0.2) ──────────────────────────
+    // Découpe un paragraphe (sans \n) en lignes tenant dans `width` pts
+    // à `size` — glouton, coupe aux espaces ; un mot seul plus large que
+    // `width` est coupé brut (caractère par caractère) plutôt que de
+    // déborder indéfiniment. Mesure via TextWidth (métriques Helvetica
+    // déjà en place) — même police que le rendu réel, donc les mêmes
+    // largeurs.
+    private void wrapParagraph(List<string> lines, int width, int size, string para) {
+        if (String_Length(para) == 0) { lines.Add(""); return }
+        let n: int = String_Length(para)
+        var lineStart: int = 0
+        var lastSpace: int = -1
+        var i: int = 0
+        while (i < n) {
+            if (String_CharAt1(para, i) == " ") { lastSpace = i }
+            let candidate: string = String_Substring(para, lineStart, i - lineStart + 1)
+            if (this.TextWidth(size, candidate) > width && i > lineStart) {
+                if (lastSpace >= lineStart) {
+                    lines.Add(String_Substring(para, lineStart, lastSpace - lineStart))
+                    lineStart = lastSpace + 1
+                    lastSpace = -1
+                } else {
+                    lines.Add(String_Substring(para, lineStart, i - lineStart))
+                    lineStart = i
+                }
+            }
+            i = i + 1
+        }
+        if (lineStart < n) { lines.Add(String_Substring(para, lineStart, n - lineStart)) }
+    }
+
+    // Découpe `text` (peut contenir des \n — un par saut de paragraphe
+    // volontaire) en lignes tenant dans `width` pts à `size`. Pur —
+    // aucun dessin, juste le calcul, réutilisable indépendamment de
+    // Flow (ex. compter les lignes pour équilibrer des colonnes avant
+    // de dessiner quoi que ce soit).
+    public List<string> WrapText(int width, int size, string text) {
+        var lines: List<string> = new List<string>()
+        let n: int = String_Length(text)
+        var paraStart: int = 0
+        var i: int = 0
+        while (i <= n) {
+            if (i == n || String_CharAt1(text, i) == "\n") {
+                this.wrapParagraph(lines, width, size, String_Substring(text, paraStart, i - paraStart))
+                paraStart = i + 1
+            }
+            i = i + 1
+        }
+        return lines
+    }
+
+    // Dessine `text` (word-wrappé via WrapText) en colonne à partir de
+    // (x, yTop), une ligne tous les `lineHeight` pts, jusqu'à `bottomLimit`
+    // (y en dessous duquel on ne dessine plus). Renvoie le texte NON
+    // dessiné (chaîne vide si tout tenait) — à l'appelant de décider quoi
+    // en faire (NewPage() + rappeler Flow avec ce reste, colonne
+    // suivante...) : amalgame-pdf reste une primitive de dessin, pas un
+    // moteur de mise en page multi-colonnes/multi-page — cette décision
+    // est spécifique à chaque document (voir CMSPress, édition hebdo).
+    // Limite connue : si la coupure tombe exactement sur une frontière de
+    // paragraphe, le \n d'origine est perdu (les lignes restantes sont
+    // rejointes par un simple espace) — cas limite rare, pas corrigé en
+    // v0.2 pour rester simple.
+    private string flowImpl(int x, int yTop, int width, int size, int lineHeight, string text, int bottomLimit, bool bold) {
+        let lines: List<string> = this.WrapText(width, size, text)
+        var y: int = yTop
+        var i: int = 0
+        while (i < lines.Count()) {
+            if (y + lineHeight > bottomLimit) {
+                var rest: string = ""
+                var j: int = i
+                while (j < lines.Count()) {
+                    if (String_Length(rest) > 0) { rest = rest + " " }
+                    rest = rest + lines.Get(j)
+                    j = j + 1
+                }
+                return rest
+            }
+            this.emitText(x, y, size, lines.Get(i), bold, 0)
+            y = y + lineHeight
+            i = i + 1
+        }
+        return ""
+    }
+    public string Flow(int x, int yTop, int width, int size, int lineHeight, string text, int bottomLimit) {
+        return this.flowImpl(x, yTop, width, size, lineHeight, text, bottomLimit, false)
+    }
+    public string FlowBold(int x, int yTop, int width, int size, int lineHeight, string text, int bottomLimit) {
+        return this.flowImpl(x, yTop, width, size, lineHeight, text, bottomLimit, true)
+    }
+
     // ── texte ────────────────────────────────────────────────────────────
     private void emitText(int x, int yTop, int size, string s, bool bold, int rgb) {
         let y: int = this.Ht - yTop
@@ -267,11 +374,31 @@ public class Pdf {
         return s
     }
 
+    // Numérotation d'objets (v0.2, multi-page) — calculée, pas fixe
+    // comme en v0.1 (qui n'avait qu'une page) :
+    //   1            Catalog
+    //   2            Pages (parent)
+    //   3 + 2*i      Page n°i       (i = 0..nPages-1)
+    //   3 + 2*i + 1  Contents n°i   (stream de la page i)
+    //   3 + 2*nPages         Font Helvetica
+    //   3 + 2*nPages + 1     Font Helvetica-Bold
+    //   3 + 2*nPages + 2 ..  Images (partagées par TOUTES les pages —
+    //                        un /Resources /XObject peut lister plus
+    //                        d'images que ce qu'une page donnée dessine
+    //                        réellement, valide selon le spec PDF ;
+    //                        plus simple que de calculer quelles images
+    //                        sont utilisées sur quelle page).
     public List<int> Build() {
         let out = new List<int>()
+        var allPages: List<List<int>> = new List<List<int>>()
+        for i in 0..this.Pages.Count() { allPages.Add(this.Pages.Get(i)) }
+        allPages.Add(this.Content)
+        let nPages: int = allPages.Count()
         let nImg: int = this.Images.Count()
-        let total: int = 6 + nImg          // 1..6 fixes + images
-        // offsets[obj] (index 1..total)
+        let fontF1: int = 3 + 2 * nPages
+        let fontF2: int = fontF1 + 1
+        let imgBase: int = fontF2 + 1
+        let total: int = fontF2 + nImg
         let offsets = new List<int>()
         for i in 0..total + 1 { offsets.Add(0) }
 
@@ -284,41 +411,53 @@ public class Pdf {
         Pdf.putAscii(out, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
 
         // obj 2 : Pages
+        var kids: string = ""
+        for i in 0..nPages { kids = kids + String_FromInt(3 + 2 * i) + " 0 R " }
         offsets.Set(2, out.Count())
-        Pdf.putAscii(out, "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
+        Pdf.putAscii(out, "2 0 obj\n<< /Type /Pages /Kids [" + kids + "] /Count "
+            + String_FromInt(nPages) + " >>\nendobj\n")
 
-        // obj 3 : Page
-        offsets.Set(3, out.Count())
+        // /Resources partagé (mêmes polices + mêmes images sur toutes
+        // les pages) — recalculé une fois, réutilisé pour chaque page.
         var xobj: string = ""
         if (nImg > 0) {
             xobj = " /XObject <<"
-            for i in 0..nImg {
-                xobj = xobj + " /Im" + String_FromInt(i) + " " + String_FromInt(7 + i) + " 0 R"
-            }
+            for i in 0..nImg { xobj = xobj + " /Im" + String_FromInt(i) + " " + String_FromInt(imgBase + i) + " 0 R" }
             xobj = xobj + " >>"
         }
-        Pdf.putAscii(out, "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 "
-            + String_FromInt(this.Wd) + " " + String_FromInt(this.Ht) + "]"
-            + " /Resources << /Font << /F1 5 0 R /F2 6 0 R >>" + xobj + " >>"
-            + " /Contents 4 0 R >>\nendobj\n")
+        let resources: string = " /Resources << /Font << /F1 " + String_FromInt(fontF1)
+            + " 0 R /F2 " + String_FromInt(fontF2) + " 0 R >>" + xobj + " >>"
 
-        // obj 4 : Contents (stream)
-        offsets.Set(4, out.Count())
-        Pdf.putAscii(out, "4 0 obj\n<< /Length " + String_FromInt(this.Content.Count()) + " >>\nstream\n")
-        Pdf.putBytes(out, this.Content)
-        Pdf.putAscii(out, "\nendstream\nendobj\n")
+        // obj 3+2i / 3+2i+1 : Page i / Contents i
+        var p: int = 0
+        while (p < nPages) {
+            let pageObj: int = 3 + 2 * p
+            let contObj: int = pageObj + 1
+            let content: List<int> = allPages.Get(p)
+            offsets.Set(pageObj, out.Count())
+            Pdf.putAscii(out, String_FromInt(pageObj) + " 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 "
+                + String_FromInt(this.Wd) + " " + String_FromInt(this.Ht) + "]" + resources
+                + " /Contents " + String_FromInt(contObj) + " 0 R >>\nendobj\n")
+            offsets.Set(contObj, out.Count())
+            Pdf.putAscii(out, String_FromInt(contObj) + " 0 obj\n<< /Length " + String_FromInt(content.Count())
+                + " >>\nstream\n")
+            Pdf.putBytes(out, content)
+            Pdf.putAscii(out, "\nendstream\nendobj\n")
+            p = p + 1
+        }
 
-        // obj 5 / 6 : polices
-        offsets.Set(5, out.Count())
-        Pdf.putAscii(out, "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n")
-        offsets.Set(6, out.Count())
-        Pdf.putAscii(out, "6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>\nendobj\n")
+        // polices
+        offsets.Set(fontF1, out.Count())
+        Pdf.putAscii(out, String_FromInt(fontF1) + " 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n")
+        offsets.Set(fontF2, out.Count())
+        Pdf.putAscii(out, String_FromInt(fontF2) + " 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>\nendobj\n")
 
-        // obj 7.. : images JPEG
+        // images JPEG
         for i in 0..nImg {
             let im: PdfImage = this.Images.Get(i)
-            offsets.Set(7 + i, out.Count())
-            Pdf.putAscii(out, String_FromInt(7 + i) + " 0 obj\n"
+            let imgObj: int = imgBase + i
+            offsets.Set(imgObj, out.Count())
+            Pdf.putAscii(out, String_FromInt(imgObj) + " 0 obj\n"
                 + "<< /Type /XObject /Subtype /Image /Width " + String_FromInt(im.W)
                 + " /Height " + String_FromInt(im.H)
                 + " /ColorSpace /" + im.Cs + " /BitsPerComponent 8 /Filter /DCTDecode /Length "

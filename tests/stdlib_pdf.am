@@ -1,0 +1,151 @@
+// Stdlib test: Amalgame.Formats.Pdf -- structure multi-page (comptage des
+// marqueurs PDF reels dans les octets produits par Build(), pas un
+// parseur PDF externe : la suite doit rester autonome en CI sans
+// dependre de poppler-utils) + retour a la ligne automatique (WrapText/
+// Flow), verifie par reconstruction du contenu et par la logique de
+// debordement/page. Le rendu visuel reel (rendu par un vrai lecteur PDF,
+// poppler pdftoppm) a ete verifie manuellement avant la release --
+// cette suite protege contre une regression future, elle ne remplace
+// pas cette verification initiale.
+
+namespace Tests
+
+import Amalgame.Formats.Pdf
+
+public class Program {
+
+    static void check(List<int> counters, bool cond, string label) {
+        if (cond) {
+            Console.WriteLine("[PASS] " + label)
+            counters.Set(0, counters.Get(0) + 1)
+        } else {
+            Console.WriteLine("[FAIL] " + label)
+            counters.Set(1, counters.Get(1) + 1)
+        }
+    }
+
+    // Nombre d'occurrences non chevauchantes de needle (marqueur ASCII
+    // structurel, ex. "/Count 3") dans le flux d'octets brut produit par
+    // Build() -- recherche directe octet par octet plutot que de
+    // reconstruire une string (String_FromChar n'existe pas dans ce
+    // runtime, et le flux contient de toute facon des octets binaires
+    // non-UTF8, ex. un flux JPEG, qu'on ne veut surtout pas decoder).
+    static int countOccurrences(List<int> hay, string needle) {
+        let needleBytes: List<int> = Bytes.FromString(needle)
+        let nn: int = needleBytes.Count()
+        let nh: int = hay.Count()
+        var count: int = 0
+        var i: int = 0
+        while (i + nn <= nh) {
+            var matched: bool = true
+            var j: int = 0
+            while (j < nn) {
+                if (hay.Get(i + j) != needleBytes.Get(j)) { matched = false }
+                j = j + 1
+            }
+            if (matched) {
+                count = count + 1
+                i = i + nn
+            } else {
+                i = i + 1
+            }
+        }
+        return count
+    }
+
+    public static void Main(string[] args) {
+        var counters: List<int> = new List<int>()
+        counters.Add(0)
+        counters.Add(0)
+
+        // -- 1. Document mono-page (jamais NewPage) -- regression v0.1 --
+        let p1: Pdf = Pdf.A4Portrait()
+        p1.Text(40, 60, 12, "Bonjour")
+        let b1: List<int> = p1.Build()
+        Program.check(counters, Program.countOccurrences(b1, "/Type /Page ") == 1,
+            "mono-page : exactement 1 objet /Type /Page")
+        Program.check(counters, Program.countOccurrences(b1, "/Count 1") == 1,
+            "mono-page : /Count 1")
+        Program.check(counters, Program.countOccurrences(b1, "%PDF-1.4") == 1,
+            "mono-page : en-tete %PDF-1.4 present")
+
+        // -- 2. Document 3 pages (2x NewPage) --
+        let p2: Pdf = Pdf.A4Portrait()
+        p2.Text(40, 60, 12, "Page 1")
+        p2.NewPage()
+        p2.Text(40, 60, 12, "Page 2")
+        p2.NewPage()
+        p2.Text(40, 60, 12, "Page 3")
+        let b2: List<int> = p2.Build()
+        Program.check(counters, Program.countOccurrences(b2, "/Type /Page ") == 3,
+            "3 pages : exactement 3 objets /Type /Page")
+        Program.check(counters, Program.countOccurrences(b2, "/Count 3") == 1,
+            "3 pages : /Count 3")
+
+        // -- 3. WrapText -- reconstruction du contenu --
+        let p3: Pdf = Pdf.A4Portrait()
+        let longText: string = "Un texte assez long pour verifier que le decoupage en lignes respecte bien la largeur de colonne demandee sans perdre un seul mot au passage"
+        let lines: List<string> = p3.WrapText(200, 12, longText)
+        Program.check(counters, lines.Count() > 1,
+            "WrapText : un texte long tient sur plusieurs lignes (colonne etroite)")
+        var rebuilt: string = ""
+        var li: int = 0
+        while (li < lines.Count()) {
+            if (li > 0) { rebuilt = rebuilt + " " }
+            rebuilt = rebuilt + lines.Get(li)
+            li = li + 1
+        }
+        Program.check(counters, rebuilt == longText,
+            "WrapText : recoller les lignes (espace) redonne le texte d'origine")
+
+        // Chaque ligne doit reellement tenir dans la largeur demandee.
+        var allFit: bool = true
+        li = 0
+        while (li < lines.Count()) {
+            if (p3.TextWidth(12, lines.Get(li)) > 200) { allFit = false }
+            li = li + 1
+        }
+        Program.check(counters, allFit, "WrapText : chaque ligne tient dans la largeur demandee")
+
+        // Texte court (tient sur une ligne) -> une seule ligne, inchangee.
+        let shortLines: List<string> = p3.WrapText(500, 12, "Court")
+        Program.check(counters, shortLines.Count() == 1 && shortLines.Get(0) == "Court",
+            "WrapText : texte court -> une seule ligne inchangee")
+
+        // Paragraphes (\n) traites comme des coupures forcees.
+        let paraLines: List<string> = p3.WrapText(500, 12, "Un\nDeux\nTrois")
+        Program.check(counters, paraLines.Count() == 3
+            && paraLines.Get(0) == "Un" && paraLines.Get(1) == "Deux" && paraLines.Get(2) == "Trois",
+            "WrapText : \\n force une coupure de ligne meme si la largeur suffirait")
+
+        // -- 4. Flow -- debordement propre, texte restant recuperable --
+        let p4: Pdf = Pdf.A4Portrait()
+        // bottomLimit == yTop : zero ligne ne peut tenir, tout doit revenir.
+        let restAll: string = p4.Flow(40, 100, 500, 12, 16, "Un Deux Trois", 100)
+        Program.check(counters, restAll == "Un Deux Trois",
+            "Flow : bottomLimit == yTop -> rien dessine, tout revient dans le reste")
+
+        // Assez de place pour tout : reste vide.
+        let restNone: string = p4.Flow(40, 100, 500, 12, 16, "Un Deux Trois", 700)
+        Program.check(counters, restNone == "",
+            "Flow : assez de place -> reste vide")
+
+        // Cas partiel : une partie dessinee, le reste recuperable et
+        // re-injectable dans un nouveau Flow (page suivante simulee).
+        // Largeur de colonne etroite (100pt) pour garantir plusieurs
+        // lignes ; bottomLimit ne laisse la place qu'a 2 d'entre elles.
+        let bigText: string = "Alpha Beta Gamma Delta Epsilon Zeta Eta Theta Iota Kappa Lambda Mu Nu Xi Omicron Pi"
+        let bigLineCount: int = p4.WrapText(100, 12, bigText).Count()
+        Program.check(counters, bigLineCount > 2,
+            "Flow (prealable) : le texte de test tient bien sur plus de 2 lignes a 100pt")
+        let restPartial: string = p4.Flow(40, 100, 100, 12, 16, bigText, 140)
+        Program.check(counters, String_Length(restPartial) > 0 && String_Length(restPartial) < String_Length(bigText),
+            "Flow : debordement partiel -> reste non vide et plus court que l'original")
+        let restPartial2: string = p4.Flow(40, 100, 100, 12, 16, restPartial, 700)
+        Program.check(counters, restPartial2 == "",
+            "Flow : le reste d'une page precedente se termine correctement sur la suivante")
+
+        Console.WriteLine("")
+        Console.WriteLine("Total: PASS=" + String_FromInt(counters.Get(0)) + " FAIL=" + String_FromInt(counters.Get(1)))
+    }
+}

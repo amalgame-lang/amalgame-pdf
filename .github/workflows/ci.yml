@@ -27,7 +27,7 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y libgc-dev libcurl4-openssl-dev
+          sudo apt-get install -y libgc-dev libcurl4-openssl-dev libssl-dev
 
       - name: Download amc ${{ matrix.amc-tag }}
         run: |
