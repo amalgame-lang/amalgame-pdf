@@ -72,6 +72,25 @@ if ! "$AMC" crypto_facade.am pdf_facade.am test.am -o test 2>&1; then
 fi
 [ -f test.c ] || { echo -e "${RED}FAIL${NC} (pas de test.c)"; exit 1; }
 
+# La compilation multi-fichiers brute (au-dessus) n'honore PAS le champ
+# [stdlib].header du manifeste (facade-stub.h) -- seul le flux réel
+# `amc package add` le fait (voir CLAUDE.md/commits liés à v0.3.0,
+# embarquement de police). facade-stub.h inclut les tableaux de police
+# vendorisés + le parseur TTF dont les blocs @c de facade.am ont besoin
+# -- injecté ici à la main pour reproduire ce que fait le vrai flux.
+# (python plutôt que sed : PKG_ROOT contient des '/', delimiteur sed a
+# la peine avec un chemin absolu injecté tel quel dans le remplacement)
+python3 -c "
+path = 'test.c'
+marker = '#include \"_runtime.h\"'
+inject = marker + '\n#include \"$PKG_ROOT/facade-stub.h\"'
+with open(path) as f:
+    content = f.read()
+content = content.replace(marker, inject, 1)
+with open(path, 'w') as f:
+    f.write(content)
+"
+
 echo "── gcc: compilation + lien contre le runtime ──"
 # -lssl -lcrypto : amalgame-crypto embarque des bindings OpenSSL bruts
 # (@c, ECDSA/EVP/BN...) pour Jws/Ecdh — nécessaires même si stdlib_pdf.am

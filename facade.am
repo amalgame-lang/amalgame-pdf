@@ -8,9 +8,12 @@ import Amalgame.Crypto
 //  amalgame-pdf — générateur PDF 1.4 souverain, pur Amalgame
 // ═══════════════════════════════════════════════════════════════════════
 //
-// Écrit un document PDF d'une page (suffisant pour factures, reçus, bons).
-// Aucune dépendance externe : polices standard PDF (Helvetica / Helvetica-Bold,
-// pas d'embarquement) et embarquement d'images JPEG (filtre DCTDecode).
+// Écrit un document PDF multi-page (factures, reçus, bons, éditions
+// imprimables). Polices TrueType EMBARQUÉES (Liberation Sans /
+// Liberation Sans Bold, metric-compatibles Helvetica/Arial, SIL OFL —
+// voir vendor/OFL.txt), vendorisées en C dans vendor/ — aucun fichier
+// externe requis à l'exécution. Embarquement d'images JPEG (filtre
+// DCTDecode).
 //
 // Repère : l'API expose des coordonnées en points, origine **coin haut-gauche**
 // (y vers le bas — comme à l'écran) ; la conversion vers le repère PDF natif

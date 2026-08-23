@@ -145,6 +145,39 @@ public class Program {
         Program.check(counters, restPartial2 == "",
             "Flow : le reste d'une page precedente se termine correctement sur la suivante")
 
+        // -- 5. Polices embarquees (v0.3.0) --
+        // Verifie les marqueurs structurels du flux produit par Build()
+        // (comme les sections precedentes) -- la verification decisive
+        // (emb=yes via pdffonts, rendu visuel via pdftoppm, largeurs
+        // reelles) a ete faite manuellement avant la release ; cette
+        // suite protege juste contre une regression future.
+        let p5: Pdf = Pdf.A4Portrait()
+        p5.Text(40, 60, 11, "essai")
+        let bytes5: List<int> = p5.Build()
+        Program.check(counters, Program.countOccurrences(bytes5, "/Subtype /TrueType") == 2,
+            "Polices embarquees : 2 dictionnaires /Subtype /TrueType (Regular + Bold)")
+        Program.check(counters, Program.countOccurrences(bytes5, "/FontFile2") == 2,
+            "Polices embarquees : 2 references /FontFile2 (flux police brut)")
+        // == 2, pas 1 : "/BaseFont /LiberationSans" est aussi un prefixe
+        // litteral de "/BaseFont /LiberationSans-Bold" (Bold), matche
+        // donc les deux dictionnaires -- le test du -Bold ci-dessous
+        // confirme separement que le second est bien present.
+        Program.check(counters, Program.countOccurrences(bytes5, "/BaseFont /LiberationSans") == 2,
+            "Polices embarquees : /BaseFont /LiberationSans present (Regular + prefixe de -Bold)")
+        Program.check(counters, Program.countOccurrences(bytes5, "/BaseFont /LiberationSans-Bold") == 1,
+            "Polices embarquees : /BaseFont /LiberationSans-Bold present (Bold)")
+        Program.check(counters, Program.countOccurrences(bytes5, "/Type1 /BaseFont /Helvetica") == 0,
+            "Polices embarquees : plus aucune reference a Helvetica/Type1 (ancien schema)")
+
+        // Largeur reelle (metriques TTF) doit differer de l'ancienne
+        // heuristique a chasse fixe -- "iiiii" (etroit) et "MMMMM"
+        // (large) doivent avoir des largeurs tres differentes, jamais
+        // le cas avec une heuristique a chasse fixe par caractere.
+        let wNarrow: int = p5.TextWidth(12, "iiiii")
+        let wWide: int = p5.TextWidth(12, "MMMMM")
+        Program.check(counters, wNarrow > 0 && wWide > wNarrow * 2,
+            "TextWidth : metriques reelles (i etroit vs M large, pas une chasse fixe)")
+
         Console.WriteLine("")
         Console.WriteLine("Total: PASS=" + String_FromInt(counters.Get(0)) + " FAIL=" + String_FromInt(counters.Get(1)))
     }

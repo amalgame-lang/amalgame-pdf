@@ -7,9 +7,13 @@ ligne automatique : factures, rapports, éditions imprimables.
 
 ## Capacités
 
-- Texte **Helvetica** / **Helvetica-Bold**, encodage **WinAnsi** (Latin-1 +
-  `€` et guillemets typographiques) — couvre le français.
-- Alignement à gauche et à droite (métriques Helvetica intégrées).
+- Texte **Liberation Sans** / **Liberation Sans Bold** (police TrueType
+  **embarquée** dans le PDF, metric-compatible Helvetica/Arial, SIL Open
+  Font License — voir `vendor/OFL.txt`), encodage **WinAnsi** (Latin-1 +
+  `€` et guillemets typographiques) — couvre le français. Vendorisée en C
+  dans `vendor/` : aucun fichier de police externe requis à l'exécution.
+- Alignement à gauche et à droite (métriques **réelles** lues dans le
+  fichier de police, pas une heuristique à chasse fixe).
 - **Multi-page** (`NewPage()`) — un document peut contenir autant de pages
   que nécessaire, toutes de la même taille.
 - **Retour à la ligne automatique** (`WrapText`/`Flow`/`FlowBold`) — découpe
@@ -70,10 +74,16 @@ let bytes: List<int> = p.Build()
 
 `rgb` est un entier `0xRRGGBB`.
 
-## Limites (v0.2)
+## Limites (v0.3)
 
 - Une seule taille de page par document (pas de mélange portrait/paysage
   dans le même PDF).
+- Espace colorimétrique **RGB** uniquement (`rg`/`RG`) — pas de CMYK.
+  Certains imprimeurs professionnels (ex. Vistaprint) l'exigent ; à
+  ajouter si le besoin se présente.
+- Pas de gestion de fond perdu (bleed)/marge de sécurité — l'appelant doit
+  dimensionner sa page en conséquence si le PDF est destiné à l'impression
+  professionnelle.
 - Images : JPEG (RGB) uniquement, via `DCTDecode`.
 - `Flow` est une primitive de dessin en colonne simple — pas un moteur de
   mise en page multi-colonnes : à l'appelant de gérer la disposition
@@ -99,4 +109,9 @@ propre entre deux pages — cette suite protège contre une régression future.
 
 ## Licence
 
-Apache-2.0.
+Code : Apache-2.0.
+
+Police embarquée (Liberation Sans / Liberation Sans Bold) : SIL Open Font
+License 1.1 — voir `vendor/OFL.txt`. La licence autorise explicitement
+l'embarquement/la redistribution dans un document généré ; aucune
+attribution requise dans les PDF produits.
