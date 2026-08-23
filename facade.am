@@ -468,25 +468,43 @@ public class Pdf {
         var stemV: int = 80
         if (fontId == 1) { stemV = 120 }
 
+        // NB : chaque chaîne ci-dessous est bâtie en plusieurs étapes via
+        // des variables intermédiaires (jamais un unique `+` géant) --
+        // trouvé empiriquement : gcc -O2 (avec inlining actif, celui
+        // qu'utilise amc) élimine silencieusement un littéral profondément
+        // imbriqué (ex. "/FontFile2") d'une chaîne à 20+ niveaux de
+        // code_string_concat imbriqués -- le littéral disparaît des octets
+        // compilés (confirmé via -fno-inline, qui seul le préserve), sans
+        // aucune erreur de compilation. Même famille de piège que les
+        // .Get().Get() déjà documentés dans ce repo, cette fois côté gcc/
+        // codegen plutôt qu'amc lui-même. Découper la chaîne en petits
+        // morceaux (2-4 `+` par variable) contourne le problème.
         offsets.Set(fontObj, out.Count())
-        Pdf.putAscii(out, String_FromInt(fontObj) + " 0 obj\n<< /Type /Font /Subtype /TrueType"
-            + " /BaseFont /" + baseFontName + " /FirstChar 0 /LastChar 255"
-            + " /Widths " + widthsStr + " /FontDescriptor " + String_FromInt(descObj) + " 0 R"
-            + " /Encoding /WinAnsiEncoding >>\nendobj\n")
+        var fontDict: string = String_FromInt(fontObj) + " 0 obj\n<< /Type /Font /Subtype /TrueType"
+        fontDict = fontDict + " /BaseFont /" + baseFontName + " /FirstChar 0 /LastChar 255"
+        fontDict = fontDict + " /Widths " + widthsStr
+        fontDict = fontDict + " /FontDescriptor " + String_FromInt(descObj) + " 0 R"
+        fontDict = fontDict + " /Encoding /WinAnsiEncoding >>\nendobj\n"
+        Pdf.putAscii(out, fontDict)
 
         offsets.Set(descObj, out.Count())
-        Pdf.putAscii(out, String_FromInt(descObj) + " 0 obj\n<< /Type /FontDescriptor"
-            + " /FontName /" + baseFontName + " /Flags 32"
-            + " /FontBBox [" + String_FromInt(bboxX0) + " " + String_FromInt(bboxY0)
-            + " " + String_FromInt(bboxX1) + " " + String_FromInt(bboxY1) + "]"
-            + " /ItalicAngle 0 /Ascent " + String_FromInt(ascent) + " /Descent " + String_FromInt(descent)
-            + " /CapHeight " + String_FromInt(capHeight) + " /StemV " + String_FromInt(stemV)
-            + " /FontFile2 " + String_FromInt(fileObj) + " 0 R >>\nendobj\n")
+        var descDict: string = String_FromInt(descObj) + " 0 obj\n<< /Type /FontDescriptor"
+        descDict = descDict + " /FontName /" + baseFontName + " /Flags 32"
+        descDict = descDict + " /FontBBox [" + String_FromInt(bboxX0) + " " + String_FromInt(bboxY0)
+        descDict = descDict + " " + String_FromInt(bboxX1) + " " + String_FromInt(bboxY1) + "]"
+        descDict = descDict + " /ItalicAngle 0 /Ascent " + String_FromInt(ascent)
+        descDict = descDict + " /Descent " + String_FromInt(descent)
+        descDict = descDict + " /CapHeight " + String_FromInt(capHeight)
+        descDict = descDict + " /StemV " + String_FromInt(stemV)
+        let fontFileRef: string = " /FontFile2 " + String_FromInt(fileObj) + " 0 R >>\nendobj\n"
+        descDict = descDict + fontFileRef
+        Pdf.putAscii(out, descDict)
 
         let len: int = Pdf.ttfLen(fontId)
         offsets.Set(fileObj, out.Count())
-        Pdf.putAscii(out, String_FromInt(fileObj) + " 0 obj\n<< /Length " + String_FromInt(len)
-            + " /Length1 " + String_FromInt(len) + " >>\nstream\n")
+        var fileDict: string = String_FromInt(fileObj) + " 0 obj\n<< /Length " + String_FromInt(len)
+        fileDict = fileDict + " /Length1 " + String_FromInt(len) + " >>\nstream\n"
+        Pdf.putAscii(out, fileDict)
         var i: int = 0
         while (i < len) {
             out.Add(Pdf.ttfByteAt(fontId, i))

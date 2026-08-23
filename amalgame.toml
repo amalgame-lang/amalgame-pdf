@@ -16,7 +16,7 @@
 
 [package]
 name              = "amalgame-pdf"
-version           = "0.3.0-t1"
+version           = "0.3.0-t2"
 license           = "Apache-2.0"
 description       = "Pure-Amalgame PDF 1.4 writer: multi-page, word-wrap, text (Helvetica, WinAnsi), vectors, JPEG images."
 authors           = ["Bastien Mouget"]
