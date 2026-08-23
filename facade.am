@@ -160,7 +160,61 @@ public class Pdf {
         return out
     }
 
-    // ── métriques Helvetica (approx, /1000 em) pour l'alignement à droite ─
+    // ── polices embarquées (v0.3) ──────────────────────────────────────
+    // Liberation Sans (SIL Open Font License, vendor/OFL.txt) — vendorisée
+    // en octets bruts dans facade-stub.h (vendor/liberation_sans_*.h,
+    // generes via un simple `xxd -i`-like) et parsee UNE FOIS par
+    // processus (cache C, vendor/ttf_parse.h) pour ses vraies metriques
+    // (largeurs par octet WinAnsi via cmap+hmtx, ascent/descent/bbox via
+    // head+hhea) — remplace a la fois l'ancienne approximation charW()
+    // (largeurs desormais REELLES, pas une moyenne par categorie de
+    // caractere) ET l'absence d'embarquement (le fichier de police
+    // COMPLET, kLiberationSansRegular/Bold, est copie tel quel dans
+    // /FontFile2 au moment de Build() — voir plus bas). fontId : 0 =
+    // Regular (F1), 1 = Bold (F2).
+    private static int ttfLen(int fontId) {
+        var result: int = 0
+        @c { result = (fontId == 0) ? (int)kLiberationSansRegularLen : (int)kLiberationSansBoldLen; }
+        return result
+    }
+    private static int ttfByteAt(int fontId, int i) {
+        var result: int = 0
+        @c { result = (fontId == 0) ? (int)kLiberationSansRegular[i] : (int)kLiberationSansBold[i]; }
+        return result
+    }
+    // Largeur reelle (unites/1000em) d'un octet WinAnsi, 0 si le glyphe
+    // n'existe pas dans la police (jamais le cas pour WinAnsi complet
+    // avec Liberation Sans, gardee en filet de securite quand meme).
+    private static int ttfWidthAt(int fontId, int code) {
+        var result: int = 0
+        @c {
+            TtfMetrics* m = ttf_get((int)fontId);
+            result = m ? m->widths[(int)code] : 0;
+        }
+        return result
+    }
+    // which : 0=ascent 1=descent 2=capHeight 3=bboxX0 4=bboxY0 5=bboxX1 6=bboxY1
+    private static int ttfMetric(int fontId, int which) {
+        var result: int = 0
+        @c {
+            TtfMetrics* m = ttf_get((int)fontId);
+            if (m) {
+                int w = (int)which;
+                if (w == 0) { result = m->ascent; }
+                else if (w == 1) { result = m->descent; }
+                else if (w == 2) { result = m->cap_height; }
+                else if (w == 3) { result = m->bbox_x0; }
+                else if (w == 4) { result = m->bbox_y0; }
+                else if (w == 5) { result = m->bbox_x1; }
+                else if (w == 6) { result = m->bbox_y1; }
+            }
+        }
+        return result
+    }
+
+    // ── métriques Helvetica (approx, /1000 em) — filet de sécurité si
+    // ttfWidthAt renvoie 0 (glyphe absent), plus la voie principale
+    // depuis v0.3 (voir TextWidth juste en dessous). ─────────────────
     private static int charW(int b) {
         if (b == 32) { return 278 }                 // espace
         if (b >= 48 && b <= 57) { return 556 }      // chiffres
@@ -181,7 +235,12 @@ public class Pdf {
     public int TextWidth(int size, string s) {
         let wa: List<int> = Pdf.winansi(s)
         var sum: int = 0
-        for i in 0..wa.Count() { sum = sum + Pdf.charW(wa.Get(i)) }
+        for i in 0..wa.Count() {
+            let code: int = wa.Get(i)
+            var w: int = Pdf.ttfWidthAt(0, code)
+            if (w == 0) { w = Pdf.charW(code) }
+            sum = sum + w
+        }
         return sum * size / 1000
     }
 
@@ -374,20 +433,85 @@ public class Pdf {
         return s
     }
 
-    // Numérotation d'objets (v0.2, multi-page) — calculée, pas fixe
-    // comme en v0.1 (qui n'avait qu'une page) :
+    // Émet un objet Font TrueType embarqué complet (dict + FontDescriptor
+    // + FontFile2) — factorisé, appelé une fois par poids (F1/F2) depuis
+    // Build(). /FirstChar 0 /LastChar 255 : couvre tout WinAnsi, un seul
+    // tableau /Widths, pas de sous-classement par plage utilisée (le
+    // fichier de police lui-même n'est de toute façon PAS sous-ensemblé
+    // -- voir la limite documentée dans le README -- donc pas de gain à
+    // sous-ensembler juste le tableau de largeurs).
+    // /Flags 32 = Nonsymbolic (jeu de caractères standard Latin, cohérent
+    // avec /Encoding /WinAnsiEncoding). StemV approximé (80 normal, 120
+    // gras) -- OS/2.usWeightClass non lu, cette valeur n'est qu'un indice
+    // de rendu pour le lecteur, jamais utilisée pour la lisibilité de
+    // base des glyphes eux-mêmes (déjà dans le programme de police
+    // embarqué, inchangé).
+    private static void emitEmbeddedFont(List<int> out, List<int> offsets,
+            int fontObj, int descObj, int fileObj, int fontId, string baseFontName) {
+        var widthsStr: string = "["
+        var c: int = 0
+        while (c < 256) {
+            var w: int = Pdf.ttfWidthAt(fontId, c)
+            if (w == 0) { w = Pdf.charW(c) }
+            widthsStr = widthsStr + String_FromInt(w) + " "
+            c = c + 1
+        }
+        widthsStr = widthsStr + "]"
+
+        let ascent: int = Pdf.ttfMetric(fontId, 0)
+        let descent: int = Pdf.ttfMetric(fontId, 1)
+        let capHeight: int = Pdf.ttfMetric(fontId, 2)
+        let bboxX0: int = Pdf.ttfMetric(fontId, 3)
+        let bboxY0: int = Pdf.ttfMetric(fontId, 4)
+        let bboxX1: int = Pdf.ttfMetric(fontId, 5)
+        let bboxY1: int = Pdf.ttfMetric(fontId, 6)
+        var stemV: int = 80
+        if (fontId == 1) { stemV = 120 }
+
+        offsets.Set(fontObj, out.Count())
+        Pdf.putAscii(out, String_FromInt(fontObj) + " 0 obj\n<< /Type /Font /Subtype /TrueType"
+            + " /BaseFont /" + baseFontName + " /FirstChar 0 /LastChar 255"
+            + " /Widths " + widthsStr + " /FontDescriptor " + String_FromInt(descObj) + " 0 R"
+            + " /Encoding /WinAnsiEncoding >>\nendobj\n")
+
+        offsets.Set(descObj, out.Count())
+        Pdf.putAscii(out, String_FromInt(descObj) + " 0 obj\n<< /Type /FontDescriptor"
+            + " /FontName /" + baseFontName + " /Flags 32"
+            + " /FontBBox [" + String_FromInt(bboxX0) + " " + String_FromInt(bboxY0)
+            + " " + String_FromInt(bboxX1) + " " + String_FromInt(bboxY1) + "]"
+            + " /ItalicAngle 0 /Ascent " + String_FromInt(ascent) + " /Descent " + String_FromInt(descent)
+            + " /CapHeight " + String_FromInt(capHeight) + " /StemV " + String_FromInt(stemV)
+            + " /FontFile2 " + String_FromInt(fileObj) + " 0 R >>\nendobj\n")
+
+        let len: int = Pdf.ttfLen(fontId)
+        offsets.Set(fileObj, out.Count())
+        Pdf.putAscii(out, String_FromInt(fileObj) + " 0 obj\n<< /Length " + String_FromInt(len)
+            + " /Length1 " + String_FromInt(len) + " >>\nstream\n")
+        var i: int = 0
+        while (i < len) {
+            out.Add(Pdf.ttfByteAt(fontId, i))
+            i = i + 1
+        }
+        Pdf.putAscii(out, "\nendstream\nendobj\n")
+    }
+
+    // Numérotation d'objets (v0.3, polices embarquées) — calculée :
     //   1            Catalog
     //   2            Pages (parent)
     //   3 + 2*i      Page n°i       (i = 0..nPages-1)
     //   3 + 2*i + 1  Contents n°i   (stream de la page i)
-    //   3 + 2*nPages         Font Helvetica
-    //   3 + 2*nPages + 1     Font Helvetica-Bold
-    //   3 + 2*nPages + 2 ..  Images (partagées par TOUTES les pages —
-    //                        un /Resources /XObject peut lister plus
-    //                        d'images que ce qu'une page donnée dessine
-    //                        réellement, valide selon le spec PDF ;
-    //                        plus simple que de calculer quelles images
-    //                        sont utilisées sur quelle page).
+    //   base             Font F1 (dict, /Type /Font /Subtype /TrueType)
+    //   base + 1         FontDescriptor F1
+    //   base + 2         FontFile2 F1 (stream — octets bruts de la police)
+    //   base + 3         Font F2
+    //   base + 4         FontDescriptor F2
+    //   base + 5         FontFile2 F2
+    //   base + 6 ..      Images (partagées par TOUTES les pages — un
+    //                    /Resources /XObject peut lister plus d'images
+    //                    que ce qu'une page donnée dessine réellement,
+    //                    valide selon le spec PDF ; plus simple que de
+    //                    calculer quelles images sont utilisées sur
+    //                    quelle page).
     public List<int> Build() {
         let out = new List<int>()
         var allPages: List<List<int>> = new List<List<int>>()
@@ -395,10 +519,15 @@ public class Pdf {
         allPages.Add(this.Content)
         let nPages: int = allPages.Count()
         let nImg: int = this.Images.Count()
-        let fontF1: int = 3 + 2 * nPages
-        let fontF2: int = fontF1 + 1
-        let imgBase: int = fontF2 + 1
-        let total: int = fontF2 + nImg
+        let base: int = 3 + 2 * nPages
+        let fontF1: int = base
+        let descF1: int = base + 1
+        let fileF1: int = base + 2
+        let fontF2: int = base + 3
+        let descF2: int = base + 4
+        let fileF2: int = base + 5
+        let imgBase: int = base + 6
+        let total: int = imgBase + nImg - 1
         let offsets = new List<int>()
         for i in 0..total + 1 { offsets.Add(0) }
 
@@ -446,11 +575,14 @@ public class Pdf {
             p = p + 1
         }
 
-        // polices
-        offsets.Set(fontF1, out.Count())
-        Pdf.putAscii(out, String_FromInt(fontF1) + " 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n")
-        offsets.Set(fontF2, out.Count())
-        Pdf.putAscii(out, String_FromInt(fontF2) + " 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>\nendobj\n")
+        // polices embarquées (v0.3) — F1 = Liberation Sans (fontId=0),
+        // F2 = Liberation Sans Bold (fontId=1). Widths[c] pour c=0..31
+        // (control chars, jamais dessinés par emitText en pratique mais
+        // le tableau doit couvrir FirstChar..LastChar sans trou) vaut 0
+        // via ttfWidthAt -- valide, un glyphe de largeur nulle n'est
+        // simplement jamais utilisé.
+        Pdf.emitEmbeddedFont(out, offsets, fontF1, descF1, fileF1, 0, "LiberationSans")
+        Pdf.emitEmbeddedFont(out, offsets, fontF2, descF2, fileF2, 1, "LiberationSans-Bold")
 
         // images JPEG
         for i in 0..nImg {
