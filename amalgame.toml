@@ -20,11 +20,11 @@
 
 [package]
 name              = "amalgame-pdf"
-version           = "0.3.0"
+version           = "0.3.1"
 license           = "Apache-2.0"
 description       = "Pure-Amalgame PDF 1.4 writer: multi-page, word-wrap, embedded TrueType fonts (Liberation Sans), vectors, JPEG images."
 authors           = ["Bastien Mouget"]
-required-amalgame = ">=0.7.7"
+required-amalgame = ">=0.8.90"
 schema-version    = 1
 
 [dependencies]

@@ -15,11 +15,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Requires amc 0.7.7+ for the cross-class external forward
-        # decl fix (RegisterExternalProg 2-pass split). Earlier amc
-        # versions mis-resolve the return type of a method that
-        # returns another class from the same facade.
-        amc-tag: [v0.7.7]
+        # amc 0.8.90+. The >=0.7.7 claimed until now was never true:
+        # facade.am parses fine ALONE under 0.7.7 and 0.8.0, but fails
+        # ("Expected '}' at 635:1") as soon as it is compiled together
+        # with another file — which is exactly what the test suite does
+        # (crypto_facade.am + pdf_facade.am + test.am). CI has therefore
+        # been red since v0.3.0 while all 21 tests pass locally: it was
+        # testing a compiler that could never build this package.
+        # Verified by hand across 0.7.7 / 0.8.0 (both fail) and 0.8.90
+        # (passes).
+        amc-tag: [v0.8.90]
     steps:
       - name: Checkout package
         uses: actions/checkout@v4
