@@ -20,13 +20,20 @@ fi
 AMC="$(cd "$(dirname "$AMC")" && pwd)/$(basename "$AMC")"
 
 AMC_DIR="$(cd "$(dirname "$AMC")" && pwd)"
-AMC_RUNTIME=""
-for cand in "$HOME/.local/share/amalgame/runtime" "/usr/local/share/amalgame/runtime"; do
-    [ -d "$cand" ] && { AMC_RUNTIME="$cand"; break; }
+# $AMC_RUNTIME d'abord, puis l'arborescence DE L'AMC QU'ON UTILISE, puis
+# une installation système. Sans les deux premiers, ce script exigeait un
+# amc installé sur la machine et ne pouvait pas tourner sur un amc
+# simplement décompressé dans un dossier — c'est-à-dire jamais en CI, où
+# "amc runtime/ not found" tombait avant le moindre test.
+for cand in "$AMC_RUNTIME" \
+            "$AMC_DIR/../share/amalgame/runtime" "$AMC_DIR/runtime" \
+            "$HOME/.local/share/amalgame/runtime" "/usr/local/share/amalgame/runtime"; do
+    [ -n "$cand" ] && [ -d "$cand" ] && { AMC_RUNTIME="$(cd "$cand" && pwd)"; break; }
 done
-[ -n "$AMC_RUNTIME" ] || { echo "ERROR: amc runtime/ not found." >&2; exit 2; }
+[ -n "$AMC_RUNTIME" ] && [ -d "$AMC_RUNTIME" ] || { echo "ERROR: amc runtime/ not found." >&2; exit 2; }
 LIBAMALGAME=""
-for cand in "$HOME/.local/share/amalgame/lib/libamalgame.a" "/usr/local/share/amalgame/lib/libamalgame.a"; do
+for cand in "$AMC_DIR/../share/amalgame/lib/libamalgame.a" "$AMC_DIR/lib/libamalgame.a" \
+            "$HOME/.local/share/amalgame/lib/libamalgame.a" "/usr/local/share/amalgame/lib/libamalgame.a"; do
     [ -f "$cand" ] && { LIBAMALGAME="$cand"; break; }
 done
 [ -n "$LIBAMALGAME" ] || { echo "ERROR: libamalgame.a not found." >&2; exit 2; }
