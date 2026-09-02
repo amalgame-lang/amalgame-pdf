@@ -43,8 +43,11 @@ jobs:
             "https://github.com/amalgame-lang/Amalgame/releases/download/${TAG}/amc-${VERSION}-linux-x86_64.tar.gz"
           mkdir -p $RUNNER_TEMP/amc-install
           tar -xzf amc.tar.gz -C $RUNNER_TEMP/amc-install --strip-components=1
-          echo "AMC=$RUNNER_TEMP/amc-install/amc" >> $GITHUB_ENV
-          echo "AMC_RUNTIME=$RUNNER_TEMP/amc-install/runtime" >> $GITHUB_ENV
+          # Le layout des archives a changé entre 0.7.x (amc + runtime/
+          # à la racine) et 0.8.9x (bin/amc + share/amalgame/runtime).
+          # Mêmes chemins que amalgame-net-http, qui teste déjà en 0.8.x.
+          echo "AMC=$RUNNER_TEMP/amc-install/bin/amc" >> $GITHUB_ENV
+          echo "AMC_RUNTIME=$RUNNER_TEMP/amc-install/share/amalgame/runtime" >> $GITHUB_ENV
 
       - name: Verify amc
         run: $AMC --version
