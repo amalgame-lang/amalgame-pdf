@@ -158,14 +158,21 @@ public class Program {
             "Polices embarquees : 2 dictionnaires /Subtype /TrueType (Regular + Bold)")
         Program.check(counters, Program.countOccurrences(bytes5, "/FontFile2") == 2,
             "Polices embarquees : 2 references /FontFile2 (flux police brut)")
-        // == 2, pas 1 : "/BaseFont /LiberationSans" est aussi un prefixe
-        // litteral de "/BaseFont /LiberationSans-Bold" (Bold), matche
-        // donc les deux dictionnaires -- le test du -Bold ci-dessous
-        // confirme separement que le second est bien present.
-        Program.check(counters, Program.countOccurrences(bytes5, "/BaseFont /LiberationSans") == 2,
-            "Polices embarquees : /BaseFont /LiberationSans present (Regular + prefixe de -Bold)")
-        Program.check(counters, Program.countOccurrences(bytes5, "/BaseFont /LiberationSans-Bold") == 1,
-            "Polices embarquees : /BaseFont /LiberationSans-Bold present (Bold)")
+        // v0.4 : polices sous-ensemblees, nom prefixe d'une etiquette de
+        // 6 majuscules + "+" (convention PDF, ISO 32000 9.6.4).
+        Program.check(counters, Program.countOccurrences(bytes5, "/BaseFont /AAAAAA+LiberationSans ") == 1,
+            "Polices embarquees : /BaseFont AAAAAA+LiberationSans (Regular, sous-ensemble)")
+        Program.check(counters, Program.countOccurrences(bytes5, "/BaseFont /AAAAAB+LiberationSans-Bold ") == 1,
+            "Polices embarquees : /BaseFont AAAAAB+LiberationSans-Bold (Bold, sous-ensemble)")
+
+        // -- 5 bis. Allegement (v0.4) : flux compresses + sous-ensemble --
+        // 2 polices + 1 page = 3 flux Flate ; un document d'une page doit
+        // peser quelques dizaines de Ko, pas ~850 Ko (polices completes,
+        // non compressees, avant v0.4).
+        Program.check(counters, Program.countOccurrences(bytes5, "/Filter /FlateDecode") == 3,
+            "Allegement : page + 2 polices compressees (/FlateDecode)")
+        Program.check(counters, bytes5.Count() < 60000,
+            "Allegement : document d'une page < 60 Ko (sous-ensemble + compression)")
         Program.check(counters, Program.countOccurrences(bytes5, "/Type1 /BaseFont /Helvetica") == 0,
             "Polices embarquees : plus aucune reference a Helvetica/Type1 (ancien schema)")
 

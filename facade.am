@@ -52,6 +52,10 @@ public class Pdf {
     // touché par NewPage() reste un simple document 1 page (aucun
     // changement de comportement pour le code existant v0.1).
     public Pages: List<List<int>>
+    // Octets WinAnsi réellement dessinés par police (1 = utilisé) : seuls
+    // leurs glyphes sont embarqués (sous-ensemble, v0.4).
+    public UsedF1: List<int>
+    public UsedF2: List<int>
 
     public Pdf() {
         this.Wd = 595
@@ -59,6 +63,12 @@ public class Pdf {
         this.Content = new List<int>()
         this.Images = new List<PdfImage>()
         this.Pages = new List<List<int>>()
+        this.UsedF1 = new List<int>()
+        this.UsedF2 = new List<int>()
+        for i in 0..256 {
+            this.UsedF1.Add(0)
+            this.UsedF2.Add(0)
+        }
     }
 
     // Clôt la page courante et en ouvre une nouvelle, même taille
@@ -345,7 +355,11 @@ public class Pdf {
         if (bold) { font = "/F2" }
         this.emit(Pdf.rgbStr(rgb) + " rg BT " + font + " " + String_FromInt(size)
             + " Tf " + String_FromInt(x) + " " + String_FromInt(y) + " Td (")
-        Pdf.putBytes(this.Content, Pdf.escLit(Pdf.winansi(s)))
+        let wa: List<int> = Pdf.winansi(s)
+        var used: List<int> = this.UsedF1
+        if (bold) { used = this.UsedF2 }
+        for i in 0..wa.Count() { used.Set(wa.Get(i), 1) }
+        Pdf.putBytes(this.Content, Pdf.escLit(wa))
         this.emit(") Tj ET\n")
     }
     public void Text(int x, int yTop, int size, string s)          { this.emitText(x, yTop, size, s, false, 0) }
@@ -436,13 +450,15 @@ public class Pdf {
         return s
     }
 
-    // Émet un objet Font TrueType embarqué complet (dict + FontDescriptor
-    // + FontFile2) — factorisé, appelé une fois par poids (F1/F2) depuis
+    // Émet un objet Font TrueType embarqué (dict + FontDescriptor +
+    // FontFile2) — factorisé, appelé une fois par poids (F1/F2) depuis
     // Build(). /FirstChar 0 /LastChar 255 : couvre tout WinAnsi, un seul
-    // tableau /Widths, pas de sous-classement par plage utilisée (le
-    // fichier de police lui-même n'est de toute façon PAS sous-ensemblé
-    // -- voir la limite documentée dans le README -- donc pas de gain à
-    // sous-ensembler juste le tableau de largeurs).
+    // tableau /Widths (identifiants de glyphes conservés par le
+    // sous-ensemble, donc largeurs inchangées). Depuis v0.4 le programme
+    // de police n'embarque plus que les glyphes utilisés (`used`, cf.
+    // vendor/ttf_subset.h) et est compressé (Flate) : ~400 Ko → ~20 Ko
+    // par poids. Nom préfixé « AAAAAA+ » : convention PDF des polices
+    // sous-ensemblées (ISO 32000, 9.6.4).
     // /Flags 32 = Nonsymbolic (jeu de caractères standard Latin, cohérent
     // avec /Encoding /WinAnsiEncoding). StemV approximé (80 normal, 120
     // gras) -- OS/2.usWeightClass non lu, cette valeur n'est qu'un indice
@@ -450,7 +466,7 @@ public class Pdf {
     // base des glyphes eux-mêmes (déjà dans le programme de police
     // embarqué, inchangé).
     private static void emitEmbeddedFont(List<int> out, List<int> offsets,
-            int fontObj, int descObj, int fileObj, int fontId, string baseFontName) {
+            int fontObj, int descObj, int fileObj, int fontId, string baseFontName, List<int> used) {
         var widthsStr: string = "["
         var c: int = 0
         while (c < 256) {
@@ -503,15 +519,30 @@ public class Pdf {
         descDict = descDict + fontFileRef
         Pdf.putAscii(out, descDict)
 
-        let len: int = Pdf.ttfLen(fontId)
+        var prog = new List<int>()
+        var brut: int = 0
+        @c {
+            int rl = 0;
+            AmalgameList* r = pdf_font_program((int)fontId, (AmalgameList*) used, &rl);
+            if (r) { prog = r; brut = rl; }
+        }
         offsets.Set(fileObj, out.Count())
-        var fileDict: string = String_FromInt(fileObj) + " 0 obj\n<< /Length " + String_FromInt(len)
-        fileDict = fileDict + " /Length1 " + String_FromInt(len) + " >>\nstream\n"
-        Pdf.putAscii(out, fileDict)
-        var i: int = 0
-        while (i < len) {
-            out.Add(Pdf.ttfByteAt(fontId, i))
-            i = i + 1
+        if (prog.Count() > 0) {
+            var fileDict: string = String_FromInt(fileObj) + " 0 obj\n<< /Length " + String_FromInt(prog.Count())
+            fileDict = fileDict + " /Length1 " + String_FromInt(brut) + " /Filter /FlateDecode >>\nstream\n"
+            Pdf.putAscii(out, fileDict)
+            Pdf.putBytes(out, prog)
+        } else {
+            // Repli (zlib indisponible) : police complète, non compressée.
+            let len: int = Pdf.ttfLen(fontId)
+            var fileDict2: string = String_FromInt(fileObj) + " 0 obj\n<< /Length " + String_FromInt(len)
+            fileDict2 = fileDict2 + " /Length1 " + String_FromInt(len) + " >>\nstream\n"
+            Pdf.putAscii(out, fileDict2)
+            var i: int = 0
+            while (i < len) {
+                out.Add(Pdf.ttfByteAt(fontId, i))
+                i = i + 1
+            }
         }
         Pdf.putAscii(out, "\nendstream\nendobj\n")
     }
@@ -589,9 +620,22 @@ public class Pdf {
                 + String_FromInt(this.Wd) + " " + String_FromInt(this.Ht) + "]" + resources
                 + " /Contents " + String_FromInt(contObj) + " 0 R >>\nendobj\n")
             offsets.Set(contObj, out.Count())
-            Pdf.putAscii(out, String_FromInt(contObj) + " 0 obj\n<< /Length " + String_FromInt(content.Count())
-                + " >>\nstream\n")
-            Pdf.putBytes(out, content)
+            // Flux de page compressé (Flate, v0.4) ; repli en clair si
+            // la compression échoue.
+            var z = new List<int>()
+            @c {
+                AmalgameList* r = pdf_deflate_list((AmalgameList*) content);
+                if (r) { z = r; }
+            }
+            if (z.Count() > 0) {
+                Pdf.putAscii(out, String_FromInt(contObj) + " 0 obj\n<< /Length " + String_FromInt(z.Count())
+                    + " /Filter /FlateDecode >>\nstream\n")
+                Pdf.putBytes(out, z)
+            } else {
+                Pdf.putAscii(out, String_FromInt(contObj) + " 0 obj\n<< /Length " + String_FromInt(content.Count())
+                    + " >>\nstream\n")
+                Pdf.putBytes(out, content)
+            }
             Pdf.putAscii(out, "\nendstream\nendobj\n")
             p = p + 1
         }
@@ -602,8 +646,8 @@ public class Pdf {
         // le tableau doit couvrir FirstChar..LastChar sans trou) vaut 0
         // via ttfWidthAt -- valide, un glyphe de largeur nulle n'est
         // simplement jamais utilisé.
-        Pdf.emitEmbeddedFont(out, offsets, fontF1, descF1, fileF1, 0, "LiberationSans")
-        Pdf.emitEmbeddedFont(out, offsets, fontF2, descF2, fileF2, 1, "LiberationSans-Bold")
+        Pdf.emitEmbeddedFont(out, offsets, fontF1, descF1, fileF1, 0, "AAAAAA+LiberationSans", this.UsedF1)
+        Pdf.emitEmbeddedFont(out, offsets, fontF2, descF2, fileF2, 1, "AAAAAB+LiberationSans-Bold", this.UsedF2)
 
         // images JPEG
         for i in 0..nImg {

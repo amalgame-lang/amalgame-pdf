@@ -15,3 +15,4 @@
 #include "vendor/liberation_sans_regular.h"
 #include "vendor/liberation_sans_bold.h"
 #include "vendor/ttf_parse.h"
+#include "vendor/ttf_subset.h"

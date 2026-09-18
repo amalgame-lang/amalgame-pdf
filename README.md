@@ -23,6 +23,11 @@ ligne automatique : factures, rapports, éditions imprimables.
 - Vecteurs : traits, rectangles (contour et remplis), couleurs RVB.
 - Images **JPEG** embarquées (filtre `DCTDecode`), partagées entre toutes
   les pages d'un même document.
+- **Documents légers** (v0.4) : seuls les glyphes réellement dessinés
+  sont embarqués (sous-ensemble de police, identifiants de glyphes
+  conservés) et tous les flux sont compressés (Flate / zlib). Une facture
+  d'une page pèse quelques dizaines de Ko (contre ~850 Ko en v0.3, polices
+  complètes non compressées). Nécessite zlib au lien (`-lz`).
 - Rendu final en octets (`List<int>`) — à servir en HTTP
   (`HttpResponse.Bytes`) ou joindre à un e-mail.
 
@@ -74,7 +79,7 @@ let bytes: List<int> = p.Build()
 
 `rgb` est un entier `0xRRGGBB`.
 
-## Limites (v0.3)
+## Limites (v0.4)
 
 - Une seule taille de page par document (pas de mélange portrait/paysage
   dans le même PDF).

@@ -16,11 +16,11 @@
 # Installation :
 #
 #   amc package add pdf
-#   amc package add github.com/amalgame-lang/amalgame-pdf@v0.3.0
+#   amc package add github.com/amalgame-lang/amalgame-pdf@v0.4.0
 
 [package]
 name              = "amalgame-pdf"
-version           = "0.3.1"
+version           = "0.4.0"
 license           = "Apache-2.0"
 description       = "Pure-Amalgame PDF 1.4 writer: multi-page, word-wrap, embedded TrueType fonts (Liberation Sans), vectors, JPEG images."
 authors           = ["Bastien Mouget"]
@@ -35,3 +35,5 @@ class     = "Pdf"
 header    = "facade-stub.h"
 namespace = "Amalgame.Formats.Pdf"
 facade    = "facade.am"
+# zlib : compression Flate des flux (v0.4).
+libs      = ["z"]
